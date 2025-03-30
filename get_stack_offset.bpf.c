@@ -28,6 +28,41 @@
 
 #include "get_stack_offset.h"
 
+/* ------------------------------------------------------------------
+ *  Universal helpers for locating task_pt_regs() on kernels both
+ *  with and without FRED stack padding (0 or 16 bytes).
+ *  Works on every x86‑64 kernel from 4.14 → latest.
+ * ------------------------------------------------------------------ */
+
+static const __u8 fred_pads[] = { 0, 16 }; /* legacy & FRED paddings */
+
+static __always_inline bool regs_match(struct pt_regs *regs)
+{
+    __u64 si, dx;
+
+    /* Ignore faults: the pointer may be garbage */
+    (void)bpf_probe_read(&si, sizeof(si), &regs->si);
+    (void)bpf_probe_read(&dx, sizeof(dx), &regs->dx);
+
+    return si == SI_VALUE && dx == DX_VALUE;
+}
+
+/*
+ * Attempt to interpret @base_ptr as the bottom of a kernel stack and return
+ * byte‑offset within task_struct if its pt_regs frame matches our sentinel.
+ * Returns ≥ 0 when found, or ‑1 if not found for any known padding.
+ */
+static __always_inline int find_regs(const __u64 *base_ptr, __u32 index)
+{
+#pragma unroll
+    for (int p = 0; p < (int)(sizeof(fred_pads) / sizeof(fred_pads[0])); p++) {
+        struct pt_regs *r = (struct pt_regs *)((unsigned long)base_ptr +
+                THREAD_SIZE - fred_pads[p]) - 1;
+        if (regs_match(r))
+            return index * sizeof(__u64);
+    }
+    return -1;
+}
 
 #define NUM_TAIL_CALLS 26
 #define TOTAL_ITERS (MAX_TASK_STRUCT / sizeof(__u64))
@@ -123,22 +158,14 @@ int do_write(struct pt_regs *ctx)
             continue;
         }
 
-        // implementing task_pt_regs() for x86_64 here.
-        struct pt_regs *regs = (struct pt_regs*)((unsigned long)maybe_stack + THREAD_SIZE - TOP_OF_KERNEL_STACK_PADDING) - 1;
-
-        __u64 pt_regs_si;
-        __u64 pt_regs_dx;
-        // ignore errors, "pointer" may not be a pointer at all.
-        (void)bpf_probe_read(&pt_regs_si, sizeof(pt_regs_si), &regs->si);
-        (void)bpf_probe_read(&pt_regs_dx, sizeof(pt_regs_dx), &regs->dx);
-
-        if (pt_regs_si== SI_VALUE && pt_regs_dx == DX_VALUE) {
+        int off = find_regs(maybe_stack, base + i);
+        if (off >= 0) {
             if (out.status != STATUS_NOTFOUND) {
                 out.status = STATUS_DUP;
                 goto out;
             }
 
-            out.offset = (base + i) * sizeof(__u64);
+            out.offset = off;
             out.status = STATUS_OK;
             // continue searching, check for dups
         }
