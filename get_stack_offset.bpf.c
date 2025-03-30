@@ -34,6 +34,9 @@
  *  Works on every x86‑64 kernel from 4.14 → latest.
  * ------------------------------------------------------------------ */
 
+/* Sign‑bit test that is true for any canonical kernel pointer */
+#define IS_KERNEL_PTR(ptr)   ((long)(ptr) < 0)
+
 static const __u8 fred_pads[] = { 0, 16 }; /* legacy & FRED paddings */
 
 static __always_inline bool regs_match(struct pt_regs *regs)
@@ -67,11 +70,6 @@ static __always_inline int find_regs(const __u64 *base_ptr, __u32 index)
 #define NUM_TAIL_CALLS 26
 #define TOTAL_ITERS (MAX_TASK_STRUCT / sizeof(__u64))
 #define ITERS_PER_PROG (TOTAL_ITERS / NUM_TAIL_CALLS)
-
-// this is correct for x86_64 unless 5-level page tables are enabled (in which case, the address
-// is lower, but I don't think we'll encounter it any time soon)
-// this is 0xffff800000000000, see "Canonical form addresses" in https://en.wikipedia.org/wiki/X86-64#Virtual_address_space_details
-#define MIN_CANONICAL_KERNEL_ADDRESS (~1UL - ((1UL << 47) - 2))
 
 // key - zero
 // value - struct output
@@ -152,9 +150,8 @@ int do_write(struct pt_regs *ctx)
             goto out;
         }
 
-        // make sure it's canonical (and in kernel space), otherwise we might get a WARN_ONCE
-        // (see ex_handler_uaccess() in the kernel, happens on 5.4).
-        if ((unsigned long)maybe_stack <= MIN_CANONICAL_KERNEL_ADDRESS) {
+        /* Quickly discard non‑canonical or user addresses */
+        if (!IS_KERNEL_PTR(maybe_stack)) {
             continue;
         }
 
