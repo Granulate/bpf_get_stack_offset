@@ -25,6 +25,7 @@
 #include <linux/bpf.h>
 #include <bpf/bpf_helpers.h>
 #include <linux/types.h>
+#include <stdbool.h>
 
 #include "get_stack_offset.h"
 
